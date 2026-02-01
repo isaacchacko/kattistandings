@@ -78,6 +78,9 @@ export default function Home() {
   };
 
   const fetchAssignmentDetails = async (url: string) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:80',message:'fetchAssignmentDetails called',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     if (selectedAssignment === url && assignmentDetails) {
       // Already loaded, just toggle
       setSelectedAssignment(null);
@@ -88,7 +91,13 @@ export default function Home() {
     try {
       setLoadingDetails(true);
       setSelectedAssignment(url);
+      // #region agent log
+      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:91',message:'Before fetch /api/assignment',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       const response = await fetch(`/api/assignment?url=${encodeURIComponent(url)}`);
+      // #region agent log
+      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:93',message:'After fetch /api/assignment',data:{url,ok:response.ok,status:response.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       if (!response.ok) {
         throw new Error('Failed to fetch assignment details');
       }
@@ -103,6 +112,9 @@ export default function Home() {
   };
 
   const fetchStandings = async (url: string) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:105',message:'fetchStandings called',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     if (selectedStandings === url && standingsData) {
       // Already loaded, just toggle
       setSelectedStandings(null);
@@ -113,7 +125,13 @@ export default function Home() {
     try {
       setLoadingStandings(true);
       setSelectedStandings(url);
+      // #region agent log
+      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:116',message:'Before fetch /api/standings',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       const response = await fetch(`/api/standings?url=${encodeURIComponent(url)}`);
+      // #region agent log
+      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:118',message:'After fetch /api/standings',data:{url,ok:response.ok,status:response.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       if (!response.ok) {
         throw new Error('Failed to fetch standings');
       }

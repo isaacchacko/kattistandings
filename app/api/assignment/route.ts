@@ -1,10 +1,17 @@
 import { NextResponse } from 'next/server';
-import * as cheerio from 'cheerio';
+import { prisma } from '@/lib/prisma';
+import { shouldPollAssignment, fetchAndSaveAssignment } from '@/lib/kattis-fetcher';
 
 export async function GET(request: Request) {
+  // #region agent log
+  fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:5',message:'API route GET called',data:{url:request.url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
   try {
     const { searchParams } = new URL(request.url);
     const assignmentUrl = searchParams.get('url');
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:9',message:'Parsed assignmentUrl',data:{assignmentUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
 
     if (!assignmentUrl) {
       return NextResponse.json(
@@ -13,106 +20,69 @@ export async function GET(request: Request) {
       );
     }
 
-    // Construct full URL if it's a relative path
-    const fullUrl = assignmentUrl.startsWith('http')
-      ? assignmentUrl
-      : `https://tamu.kattis.com${assignmentUrl}`;
+    // Always check if we need to poll and trigger fetch if needed
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:18',message:'Before shouldPollAssignment',data:{assignmentUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    const needsPolling = await shouldPollAssignment(assignmentUrl);
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:20',message:'After shouldPollAssignment',data:{needsPolling},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    console.log(`[Assignment API] URL: ${assignmentUrl}, Needs polling: ${needsPolling}`);
+    
+    if (needsPolling) {
+      // #region agent log
+      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:24',message:'Entering needsPolling branch',data:{assignmentUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
+      try {
+        console.log(`[Assignment API] Fetching and saving assignment: ${assignmentUrl}`);
+        // Fetch and save to database - this will create the assignment if it doesn't exist
+        await fetchAndSaveAssignment(assignmentUrl);
+        // #region agent log
+        fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:28',message:'After fetchAndSaveAssignment',data:{assignmentUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
+        console.log(`[Assignment API] Successfully fetched and saved assignment: ${assignmentUrl}`);
+      } catch (error) {
+        // #region agent log
+        fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:31',message:'Error in fetchAndSaveAssignment',data:{assignmentUrl,error:error instanceof Error?error.message:String(error)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        console.error(`[Assignment API] Error fetching assignment: ${assignmentUrl}`, error);
+        // Continue to try to return from database even if fetch failed
+      }
+    }
 
-    const response = await fetch(fullUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    // Get assignment from database (should exist now after fetch)
+    const assignment = await prisma.assignment.findUnique({
+      where: { url: assignmentUrl },
+      include: {
+        entries: true,
       },
     });
 
-    if (!response.ok) {
+    if (!assignment) {
+      // If still not found after fetch attempt, return error
       return NextResponse.json(
-        { error: `Failed to fetch: ${response.status} ${response.statusText}` },
-        { status: response.status }
+        { error: 'Assignment not found and could not be fetched' },
+        { status: 404 }
       );
     }
 
-    const html = await response.text();
-    const $ = cheerio.load(html);
-    
-    // Extract assignment title
-    const title = $('h1').first().text().trim();
-    
-    // Extract stats from strip-grid-item
-    const stats: Record<string, number> = {};
-    $('.strip-grid-item').each((_, el) => {
-      const item = $(el);
-      const label = item.find('.text-sm').text().trim().toLowerCase();
-      const valueText = item.find('.text-xl').text().trim();
-      const value = parseInt(valueText, 10);
-      if (label && !isNaN(value)) {
-        stats[label] = value;
-      }
-    });
-    
-    // Extract time information from data-props
-    const timeData: Record<string, any> = {};
-    const contestTimeEl = $('#contest_time');
-    if (contestTimeEl.length > 0) {
-      const dataProps = contestTimeEl.attr('data-props');
-      if (dataProps) {
-        try {
-          const props = JSON.parse(dataProps.replace(/&quot;/g, '"'));
-          timeData.has_start = props.has_start;
-          timeData.elapsed_seconds = props.elapsed_seconds;
-          timeData.total_seconds = props.total_seconds;
-        } catch (e) {
-          // Ignore parse errors
-        }
-      }
-    }
-    
-    // Extract time information from visible elements
-    const timeInfo: Record<string, string> = {};
-    $('.time-elapsed, .time-remaining, .starts-in').each((_, el) => {
-      const item = $(el);
-      const label = item.find('h4').text().trim();
-      const value = item.find('span').text().trim();
-      if (label && value) {
-        timeInfo[label.toLowerCase().replace(/\s+/g, '_')] = value;
-      }
-    });
-    
-    // Extract count_until_end if available
-    const endsIn = $('.count_until_end').text().trim();
-    if (endsIn) {
-      timeInfo['ends_in'] = endsIn;
-    }
-    
-    const startsIn = $('.starts-in span').text().trim();
-    if (startsIn) {
-      timeInfo['starts_in'] = startsIn;
-    }
-    
-    // Extract problems list if available on this page
-    const problems: any[] = [];
-    $('ol > li, ul > li').each((_, el) => {
-      const problemLink = $(el).find('a');
-      if (problemLink.length > 0) {
-        const problemName = problemLink.text().trim();
-        const problemUrl = problemLink.attr('href') || '';
-        if (problemName && problemUrl) {
-          problems.push({
-            name: problemName,
-            url: problemUrl,
-          });
-        }
-      }
-    });
-    
+    // Format response
     return NextResponse.json({
-      title: title,
-      url: assignmentUrl,
-      stats: stats,
-      timeInfo: timeInfo,
-      timeData: Object.keys(timeData).length > 0 ? timeData : undefined,
-      problems: problems.length > 0 ? problems : undefined,
+      title: assignment.title,
+      url: assignment.url,
+      stats: assignment.stats as Record<string, number> | undefined,
+      timeInfo: assignment.timeInfo as Record<string, string> | undefined,
+      timeData: assignment.timeData as Record<string, any> | undefined,
+      problems: assignment.entries.map(entry => ({
+        name: entry.name,
+        url: entry.url,
+      })),
     });
   } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/assignment/route.ts:62',message:'Top-level error handler',data:{error:error instanceof Error?error.message:String(error)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
