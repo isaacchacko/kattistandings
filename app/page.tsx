@@ -1,75 +1,190 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 
-interface Problem {
+interface UserRanking {
   name: string;
-  url: string;
-}
-
-interface Assignment {
-  name: string;
-  url: string;
-  status: string;
-  problems: Problem[];
-}
-
-interface AssignmentDetails {
-  title: string;
-  url: string;
-  stats: Record<string, number>;
-  timeInfo: Record<string, string>;
-  timeData?: Record<string, any>;
-  problems?: Problem[];
-}
-
-interface ProblemResult {
-  solved: boolean;
-  first?: boolean;
-  attempted?: boolean;
-  attempts: number;
-  time: string | null;
-}
-
-interface StandingsEntry {
   rank: number;
-  name: string;
-  solvedCount: number;
-  totalTimeMinutes: number;
-  problems: ProblemResult[];
+  totalScore: number;
+  baseProblemsSolved: number;
+  upsolveBonus: number;
+  problemsNotDone: string[];
+  problemsNotDoneCount: number;
+  problemsNotDoneByAssignment?: Array<{ assignmentName: string; assignmentUrl: string; problems: string[] }>;
+  upsolvedProblems?: Array<{ assignmentName: string; assignmentUrl: string; problemName: string }>;
 }
 
-interface StandingsData {
-  title: string;
-  url: string;
-  problemNames: string[];
-  standings: StandingsEntry[];
+interface RankData {
+  rankings: UserRanking[];
+  totalUsers: number;
 }
+
+type SortColumn = 'rank' | 'name' | 'totalScore' | 'baseProblemsSolved' | 'upsolveBonus' | 'problemsNotDoneCount';
+type SortDirection = 'asc' | 'desc';
+
+const CACHE_KEY_RANKINGS = 'kattistandings_rankings';
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+interface CachedData<T> {
+  data: T;
+  timestamp: number;
+}
+
+// Helper functions for caching
+const getCachedRankings = (): RankData | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const cached = localStorage.getItem(CACHE_KEY_RANKINGS);
+    if (!cached) return null;
+    
+    const parsed: CachedData<RankData> = JSON.parse(cached);
+    const now = Date.now();
+    
+    // Check if cache is still valid (less than 5 minutes old)
+    if (now - parsed.timestamp < CACHE_DURATION_MS) {
+      return parsed.data;
+    }
+    
+    // Cache expired, remove it
+    localStorage.removeItem(CACHE_KEY_RANKINGS);
+    return null;
+  } catch (err) {
+    console.warn('Failed to read cached rankings:', err);
+    return null;
+  }
+};
+
+const setCachedRankings = (data: RankData): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    const cached: CachedData<RankData> = {
+      data,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(CACHE_KEY_RANKINGS, JSON.stringify(cached));
+  } catch (err) {
+    console.warn('Failed to cache rankings:', err);
+  }
+};
 
 export default function Home() {
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [rankings, setRankings] = useState<UserRanking[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedAssignment, setSelectedAssignment] = useState<string | null>(null);
-  const [assignmentDetails, setAssignmentDetails] = useState<AssignmentDetails | null>(null);
-  const [loadingDetails, setLoadingDetails] = useState(false);
-  const [selectedStandings, setSelectedStandings] = useState<string | null>(null);
-  const [standingsData, setStandingsData] = useState<StandingsData | null>(null);
-  const [loadingStandings, setLoadingStandings] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
+  const [expandedUpsolves, setExpandedUpsolves] = useState<string | null>(null);
+  const [linkedinUrls, setLinkedinUrls] = useState<Record<string, string>>({});
+  const [sortColumn, setSortColumn] = useState<SortColumn>('rank');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
   useEffect(() => {
-    fetchAssignments();
+    // Try to load from cache first
+    const cached = getCachedRankings();
+    if (cached) {
+      setRankings(cached.rankings || []);
+      setLoading(false);
+    }
+    
+    fetchRankings();
+    fetchLinkedInUrls();
   }, []);
 
-  const fetchAssignments = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch('/api/home');
-      if (!response.ok) {
-        throw new Error('Failed to fetch assignments');
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      // Toggle direction if clicking the same column
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      // Set new column and default to ascending
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  const getSortedRankings = (): UserRanking[] => {
+    const sorted = [...rankings];
+    sorted.sort((a, b) => {
+      let comparison = 0;
+
+      switch (sortColumn) {
+        case 'rank':
+          comparison = a.rank - b.rank;
+          break;
+        case 'name':
+          comparison = a.name.localeCompare(b.name);
+          break;
+        case 'totalScore':
+          comparison = a.totalScore - b.totalScore;
+          break;
+        case 'baseProblemsSolved':
+          comparison = a.baseProblemsSolved - b.baseProblemsSolved;
+          break;
+        case 'upsolveBonus':
+          comparison = a.upsolveBonus - b.upsolveBonus;
+          break;
+        case 'problemsNotDoneCount':
+          comparison = a.problemsNotDoneCount - b.problemsNotDoneCount;
+          break;
       }
-      const data = await response.json();
-      setAssignments(data.assignments || []);
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+
+    return sorted;
+  };
+
+  const SortIcon = ({ column }: { column: SortColumn }) => {
+    if (sortColumn !== column) {
+      return <span className="text-zinc-400 dark:text-zinc-600 ml-1">↕</span>;
+    }
+    return sortDirection === 'asc' ? (
+      <span className="text-blue-600 dark:text-blue-400 ml-1">↑</span>
+    ) : (
+      <span className="text-blue-600 dark:text-blue-400 ml-1">↓</span>
+    );
+  };
+
+  const fetchLinkedInUrls = async () => {
+    try {
+      const response = await fetch('/linkedin_urls.json');
+      if (response.ok) {
+        const data = await response.json();
+        setLinkedinUrls(data);
+      }
+    } catch (err) {
+      // Silently fail - LinkedIn URLs are optional
+      console.warn('Failed to load LinkedIn URLs:', err);
+    }
+  };
+
+  const fetchRankings = async (skipCache = false) => {
+    try {
+      // Check cache first unless explicitly skipping
+      if (!skipCache) {
+        const cached = getCachedRankings();
+        if (cached) {
+          setRankings(cached.rankings || []);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      setLoading(true);
+      setError(null);
+      const response = await fetch('/api/rank');
+      if (!response.ok) {
+        throw new Error('Failed to fetch rankings');
+      }
+      const data: RankData = await response.json();
+      setRankings(data.rankings || []);
+      
+      // Cache the data
+      setCachedRankings(data);
+      
+      // Reset sort to default when new data is loaded
+      setSortColumn('rank');
+      setSortDirection('asc');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -77,78 +192,33 @@ export default function Home() {
     }
   };
 
-  const fetchAssignmentDetails = async (url: string) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:80',message:'fetchAssignmentDetails called',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    if (selectedAssignment === url && assignmentDetails) {
-      // Already loaded, just toggle
-      setSelectedAssignment(null);
-      setAssignmentDetails(null);
-      return;
-    }
-
+  const handleRepoll = async () => {
     try {
-      setLoadingDetails(true);
-      setSelectedAssignment(url);
-      // #region agent log
-      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:91',message:'Before fetch /api/assignment',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      const response = await fetch(`/api/assignment?url=${encodeURIComponent(url)}`);
-      // #region agent log
-      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:93',message:'After fetch /api/assignment',data:{url,ok:response.ok,status:response.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
+      setRefreshing(true);
+      setError(null);
+      const response = await fetch('/api/repoll', { method: 'POST' });
       if (!response.ok) {
-        throw new Error('Failed to fetch assignment details');
+        throw new Error('Failed to refresh data');
       }
-      const data = await response.json();
-      setAssignmentDetails(data);
+      const result = await response.json();
+      console.log('Repoll result:', result);
+
+      // Clear cache and refresh rankings after repoll
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(CACHE_KEY_RANKINGS);
+      }
+      await fetchRankings(true); // Skip cache check
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
-      setSelectedAssignment(null);
     } finally {
-      setLoadingDetails(false);
-    }
-  };
-
-  const fetchStandings = async (url: string) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:105',message:'fetchStandings called',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    if (selectedStandings === url && standingsData) {
-      // Already loaded, just toggle
-      setSelectedStandings(null);
-      setStandingsData(null);
-      return;
-    }
-
-    try {
-      setLoadingStandings(true);
-      setSelectedStandings(url);
-      // #region agent log
-      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:116',message:'Before fetch /api/standings',data:{url},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      const response = await fetch(`/api/standings?url=${encodeURIComponent(url)}`);
-      // #region agent log
-      fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/page.tsx:118',message:'After fetch /api/standings',data:{url,ok:response.ok,status:response.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      if (!response.ok) {
-        throw new Error('Failed to fetch standings');
-      }
-      const data = await response.json();
-      setStandingsData(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-      setSelectedStandings(null);
-    } finally {
-      setLoadingStandings(false);
+      setRefreshing(false);
     }
   };
 
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-lg">Loading assignments...</div>
+        <div className="text-lg">Loading rankings...</div>
       </div>
     );
   }
@@ -164,244 +234,280 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-black py-8 px-4">
       <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8 text-black dark:text-zinc-50">
-          CSCE 430 Assignments
-        </h1>
-
-        <div className="space-y-4">
-          {assignments.map((assignment, index) => (
-            <div
-              key={index}
-              className="bg-white dark:bg-zinc-900 rounded-lg shadow-md p-6 border border-zinc-200 dark:border-zinc-800"
+        <div className="flex items-center justify-between mb-8">
+          <h1 className="text-3xl font-bold text-black dark:text-zinc-50">
+            Kattistandings
+          </h1>
+          <div className="flex gap-2">
+            <Link
+              href="/assignments"
+              className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
             >
-              <div className="flex items-center justify-between">
-                <div className="flex-1">
-                  <h2 className="text-xl font-semibold text-black dark:text-zinc-50 mb-2">
-                    {assignment.name}
-                  </h2>
-                  <div className="flex items-center gap-4 text-sm text-zinc-600 dark:text-zinc-400">
-                    <span className={assignment.status.includes('Ended') ? 'text-red-600' : 'text-green-600'}>
-                      {assignment.status}
-                    </span>
-                    <span>{assignment.problems.length} problems</span>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => fetchAssignmentDetails(assignment.url)}
-                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                    disabled={loadingDetails}
-                  >
-                    {loadingDetails && selectedAssignment === assignment.url
-                      ? 'Loading...'
-                      : selectedAssignment === assignment.url
-                      ? 'Hide Details'
-                      : 'View Details'}
-                  </button>
-                  <button
-                    onClick={() => fetchStandings(assignment.url)}
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-                    disabled={loadingStandings}
-                  >
-                    {loadingStandings && selectedStandings === assignment.url
-                      ? 'Loading...'
-                      : selectedStandings === assignment.url
-                      ? 'Hide Standings'
-                      : 'View Standings'}
-                  </button>
-                </div>
-              </div>
-
-              {assignment.problems.length > 0 && (
-                <div className="mt-4">
-                  <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                    Problems:
-                  </h3>
-                  <ul className="list-disc list-inside space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-                    {assignment.problems.map((problem, pIndex) => (
-                      <li key={pIndex}>{problem.name}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {selectedAssignment === assignment.url && assignmentDetails && (
-                <div className="mt-6 pt-6 border-t border-zinc-200 dark:border-zinc-800">
-                  <h3 className="text-lg font-semibold text-black dark:text-zinc-50 mb-4">
-                    Assignment Details
-                  </h3>
-                  
-                  {Object.keys(assignmentDetails.stats).length > 0 && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                      {Object.entries(assignmentDetails.stats).map(([key, value]) => (
-                        <div
-                          key={key}
-                          className="bg-zinc-100 dark:bg-zinc-800 rounded p-3 text-center"
-                        >
-                          <div className="text-2xl font-bold text-black dark:text-zinc-50">
-                            {value}
-                          </div>
-                          <div className="text-xs text-zinc-600 dark:text-zinc-400 capitalize">
-                            {key}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {assignmentDetails.timeData && (
-                    <div className="mb-4">
-                      <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                        Time Data:
-                      </h4>
-                      <div className="space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-                        {Object.entries(assignmentDetails.timeData).map(([key, value]) => (
-                          <div key={key} className="flex justify-between">
-                            <span className="capitalize">{key.replace(/_/g, ' ')}:</span>
-                            <span>{typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {Object.keys(assignmentDetails.timeInfo).length > 0 && (
-                    <div className="mb-4">
-                      <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                        Time Information:
-                      </h4>
-                      <div className="space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-                        {Object.entries(assignmentDetails.timeInfo).map(([key, value]) => (
-                          <div key={key} className="flex justify-between">
-                            <span className="capitalize">{key.replace(/_/g, ' ')}:</span>
-                            <span>{value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {assignmentDetails.problems && assignmentDetails.problems.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                        Problems from Assignment Page:
-                      </h4>
-                      <ul className="list-disc list-inside space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-                        {assignmentDetails.problems.map((problem, pIndex) => (
-                          <li key={pIndex}>{problem.name}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {selectedStandings === assignment.url && standingsData && (
-                <div className="mt-6 pt-6 border-t border-zinc-200 dark:border-zinc-800">
-                  <h3 className="text-lg font-semibold text-black dark:text-zinc-50 mb-4">
-                    Standings
-                  </h3>
-                  
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full border-collapse border border-zinc-300 dark:border-zinc-700">
-                      <thead>
-                        <tr className="bg-zinc-100 dark:bg-zinc-800">
-                          <th className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-left text-sm font-semibold text-black dark:text-zinc-50">
-                            Rank
-                          </th>
-                          <th className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-left text-sm font-semibold text-black dark:text-zinc-50">
-                            Group
-                          </th>
-                          <th className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-right text-sm font-semibold text-black dark:text-zinc-50">
-                            Slv.
-                          </th>
-                          <th className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-right text-sm font-semibold text-black dark:text-zinc-50">
-                            Time
-                          </th>
-                          {standingsData.problemNames.map((problemName, pIndex) => {
-                            const letter = String.fromCharCode(65 + pIndex); // A, B, C, etc.
-                            return (
-                              <th
-                                key={pIndex}
-                                title={problemName}
-                                className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-center text-sm font-semibold text-black dark:text-zinc-50 cursor-help"
-                              >
-                                {letter}
-                              </th>
-                            );
-                          })}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {standingsData.standings.map((entry, index) => (
-                          <tr
-                            key={index}
-                            className="hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
-                          >
-                            <td className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm text-zinc-600 dark:text-zinc-400">
-                              {index + 1}
-                            </td>
-                            <td className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-medium text-black dark:text-zinc-50">
-                              {entry.name}
-                            </td>
-                            <td className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm text-right font-semibold text-black dark:text-zinc-50">
-                              {entry.solvedCount}
-                            </td>
-                            <td className="border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm text-right font-semibold text-black dark:text-zinc-50">
-                              {entry.totalTimeMinutes}
-                            </td>
-                            {standingsData.problemNames.map((problemName, pIndex) => {
-                              const problem = entry.problems[pIndex];
-                              return (
-                                <td
-                                  key={pIndex}
-                                  className={`border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-center text-sm ${
-                                    problem?.solved
-                                      ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300'
-                                      : 'text-zinc-400 dark:text-zinc-600'
-                                  }`}
-                                >
-                                  {problem?.solved ? (
-                                    <div className="flex flex-col items-center">
-                                      {problem.first ? (
-                                        <span className="font-semibold text-yellow-600 dark:text-yellow-400" title="First to solve">
-                                          ⭐
-                                        </span>
-                                      ) : (
-                                        <span className="font-semibold">✓</span>
-                                      )}
-                                      <span className="text-xs">
-                                        {problem.attempts > 0 ? `${problem.attempts}` : ''}
-                                      </span>
-                                      {problem.time && (
-                                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                                          {problem.time}
-                                        </span>
-                                      )}
-                                    </div>
-                                  ) : problem?.attempted && problem.attempts > 0 ? (
-                                    <div className="flex flex-col items-center">
-                                      <span className="font-semibold text-red-600">✗</span>
-                                      <span className="text-xs">
-                                        {problem.attempts}
-                                      </span>
-                                    </div>
-                                  ) : (
-                                    <span>-</span>
-                                  )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+              View Assignments
+            </Link>
+            <button
+              onClick={handleRepoll}
+              disabled={refreshing}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {refreshing ? 'Refreshing...' : 'Refresh Data'}
+            </button>
+          </div>
         </div>
+
+        <p className='my-4'>Note: I haven&apos;t added in the base values for each lab/set. Current numbers are just summations of all problems given.</p>
+
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-md border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse">
+              <thead>
+                <tr className="bg-zinc-100 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
+                  <th
+                    className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-left text-sm font-semibold text-black dark:text-zinc-50 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors select-none"
+                    onClick={() => handleSort('rank')}
+                  >
+                    <div className="flex items-center">
+                      Rank
+                      <SortIcon column="rank" />
+                    </div>
+                  </th>
+                  <th
+                    className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-left text-sm font-semibold text-black dark:text-zinc-50 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors select-none"
+                    onClick={() => handleSort('name')}
+                  >
+                    <div className="flex items-center">
+                      Name
+                      <SortIcon column="name" />
+                    </div>
+                  </th>
+                  <th
+                    className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-right text-sm font-semibold text-black dark:text-zinc-50 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors select-none"
+                    onClick={() => handleSort('totalScore')}
+                  >
+                    <div className="flex items-center justify-end">
+                      Total Score
+                      <SortIcon column="totalScore" />
+                    </div>
+                  </th>
+                  <th
+                    className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-right text-sm font-semibold text-black dark:text-zinc-50 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors select-none"
+                    onClick={() => handleSort('baseProblemsSolved')}
+                  >
+                    <div className="flex items-center justify-end">
+                      Problems Solved
+                      <SortIcon column="baseProblemsSolved" />
+                    </div>
+                  </th>
+                  <th
+                    className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-right text-sm font-semibold text-black dark:text-zinc-50 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors select-none"
+                    onClick={() => handleSort('upsolveBonus')}
+                  >
+                    <div className="flex items-center justify-end">
+                      Upsolve Bonus
+                      <SortIcon column="upsolveBonus" />
+                    </div>
+                  </th>
+                  <th className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-right text-sm font-semibold text-black dark:text-zinc-50">
+                    Upsolved Problems
+                  </th>
+                  <th
+                    className="px-4 py-3 text-right text-sm font-semibold text-black dark:text-zinc-50 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors select-none"
+                    onClick={() => handleSort('problemsNotDoneCount')}
+                  >
+                    <div className="flex items-center justify-end">
+                      Problems Not Done
+                      <SortIcon column="problemsNotDoneCount" />
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {getSortedRankings().map((user, index) => (
+                  <React.Fragment key={user.name}>
+                    <tr
+                      className={`hover:bg-zinc-50 dark:hover:bg-zinc-800/50 border-b border-zinc-200 dark:border-zinc-700 ${index % 2 === 0 ? 'bg-white dark:bg-zinc-900' : 'bg-zinc-50/50 dark:bg-zinc-800/30'
+                        }`}
+                    >
+                      <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm font-semibold text-black dark:text-zinc-50">
+                        {user.rank}
+                      </td>
+                      <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm font-medium text-black dark:text-zinc-50">
+                        {linkedinUrls[user.name] && linkedinUrls[user.name].trim() ? (
+                          <a
+                            href={linkedinUrls[user.name]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                          >
+                            <svg
+                              className="w-4 h-4 text-blue-600 dark:text-blue-400"
+                              fill="currentColor"
+                              viewBox="0 0 24 24"
+                              aria-hidden="true"
+                            >
+                              <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                            </svg>
+                            <span>{user.name}</span>
+                          </a>
+                        ) : (
+                          <span>{user.name}</span>
+                        )}
+                      </td>
+                      <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm text-right font-semibold text-black dark:text-zinc-50">
+                        {user.totalScore.toFixed(1)}
+                      </td>
+                      <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm text-right text-zinc-600 dark:text-zinc-400">
+                        {user.baseProblemsSolved}
+                      </td>
+                      <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm text-right text-zinc-600 dark:text-zinc-400">
+                        {user.upsolveBonus > 0 ? `+${user.upsolveBonus.toFixed(1)}` : '0.0'}
+                      </td>
+                      <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm text-right">
+                        {user.upsolvedProblems && user.upsolvedProblems.length > 0 ? (
+                          <button
+                            onClick={() => setExpandedUpsolves(expandedUpsolves === user.name ? null : user.name)}
+                            className="text-green-600 dark:text-green-400 hover:underline"
+                          >
+                            {user.upsolvedProblems.length} {expandedUpsolves === user.name ? '▼' : '▶'}
+                          </button>
+                        ) : (
+                          <span className="text-zinc-400 dark:text-zinc-600">0</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-right">
+                        {user.problemsNotDoneCount > 0 ? (
+                          <button
+                            onClick={() => setExpandedUser(expandedUser === user.name ? null : user.name)}
+                            className="text-blue-600 dark:text-blue-400 hover:underline"
+                          >
+                            {user.problemsNotDoneCount} {expandedUser === user.name ? '▼' : '▶'}
+                          </button>
+                        ) : (
+                          <span className="text-zinc-400 dark:text-zinc-600">0</span>
+                        )}
+                      </td>
+                    </tr>
+                    {expandedUpsolves === user.name && user.upsolvedProblems && user.upsolvedProblems.length > 0 && (
+                      <tr className="bg-green-50 dark:bg-green-900/20">
+                        <td colSpan={7} className="px-4 py-3">
+                          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                            <div className="font-semibold mb-2 text-green-700 dark:text-green-400">Upsolved Problems:</div>
+                            <div className="space-y-2">
+                              {Object.entries(
+                                user.upsolvedProblems.reduce((acc, item) => {
+                                  if (!acc[item.assignmentName]) {
+                                    acc[item.assignmentName] = { url: item.assignmentUrl, problems: [] };
+                                  }
+                                  acc[item.assignmentName].problems.push(item.problemName);
+                                  return acc;
+                                }, {} as Record<string, { url: string; problems: string[] }>)
+                              ).map(([assignmentName, data]) => {
+                                let fullUrl = data.url.startsWith('http')
+                                  ? data.url
+                                  : `https://tamu.kattis.com${data.url}`;
+                                // Ensure it links to the standings page
+                                if (!fullUrl.endsWith('/standings')) {
+                                  fullUrl = fullUrl.endsWith('/')
+                                    ? `${fullUrl}standings`
+                                    : `${fullUrl}/standings`;
+                                }
+                                return (
+                                  <div key={assignmentName} className="mb-3">
+                                    <a
+                                      href={fullUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="font-medium text-green-800 dark:text-green-300 mb-1 hover:underline cursor-pointer"
+                                    >
+                                      {assignmentName} ↗
+                                    </a>
+                                    <div className="flex flex-wrap gap-2 mt-1">
+                                      {data.problems.map((problem, idx) => (
+                                        <span
+                                          key={idx}
+                                          className="px-2 py-1 bg-green-200 dark:bg-green-800 rounded text-xs"
+                                        >
+                                          {problem}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {expandedUser === user.name && user.problemsNotDoneCount > 0 && (
+                      <tr className="bg-zinc-100 dark:bg-zinc-800/50">
+                        <td colSpan={7} className="px-4 py-3">
+                          <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                            <div className="font-semibold mb-2">Problems Not Done:</div>
+                            {user.problemsNotDoneByAssignment && user.problemsNotDoneByAssignment.length > 0 ? (
+                              <div className="space-y-3">
+                                {user.problemsNotDoneByAssignment.map((assignment, idx) => {
+                                  let fullUrl = assignment.assignmentUrl.startsWith('http')
+                                    ? assignment.assignmentUrl
+                                    : `https://tamu.kattis.com${assignment.assignmentUrl}`;
+                                  // Ensure it links to the standings page
+                                  if (!fullUrl.endsWith('/standings')) {
+                                    fullUrl = fullUrl.endsWith('/')
+                                      ? `${fullUrl}standings`
+                                      : `${fullUrl}/standings`;
+                                  }
+                                  return (
+                                    <div key={idx} className="mb-3">
+                                      <a
+                                        href={fullUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="font-medium text-zinc-800 dark:text-zinc-200 mb-1 hover:underline cursor-pointer block"
+                                      >
+                                        {assignment.assignmentName} ↗
+                                      </a>
+                                      <div className="flex flex-wrap gap-2 mt-1">
+                                        {assignment.problems.map((problem, problemIdx) => (
+                                          <span
+                                            key={problemIdx}
+                                            className="px-2 py-1 bg-zinc-200 dark:bg-zinc-700 rounded text-xs"
+                                          >
+                                            {problem}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {user.problemsNotDone.map((problem, idx) => (
+                                  <span
+                                    key={idx}
+                                    className="px-2 py-1 bg-zinc-200 dark:bg-zinc-700 rounded text-xs"
+                                  >
+                                    {problem}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {rankings.length === 0 && (
+          <div className="text-center py-8 text-zinc-600 dark:text-zinc-400">
+            No rankings available. Try refreshing the data.
+          </div>
+        )}
       </div>
     </div>
   );

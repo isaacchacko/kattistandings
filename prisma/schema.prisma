@@ -11,63 +11,87 @@ datasource db {
 }
 
 model Assignment {
-  id          String   @id @default(uuid())
-  name        String
-  url         String   @unique
-  title       String?
-  status      String   // "ongoing", "ended", "locked"
+  id           String    @id @default(uuid())
+  name         String
+  url          String    @unique
+  title        String?
+  status       String // "ongoing", "ended", "locked"
   // Stats from /api/assignment endpoint (e.g., "students", "problems", etc.)
-  stats       Json?    // Record<string, number>
+  stats        Json? // Record<string, number>
   // Time information from /api/assignment endpoint
-  timeInfo    Json?    // Record<string, string>
+  timeInfo     Json? // Record<string, string>
   // Time data from /api/assignment endpoint
-  timeData    Json?    // Record<string, any>
+  timeData     Json? // Record<string, any>
   lastPolledAt DateTime? // When this assignment was last fetched from Kattis
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
   // Related data
-  entries     AssignmentEntry[]
-  ranks       Rank[]
-  
+  entries        AssignmentEntry[]
+  ranks          Rank[]
+  problemResults ProblemResult[]
+
   @@index([url])
   @@index([status])
 }
 
 model AssignmentEntry {
-  id            String   @id @default(uuid())
-  assignmentId  String
-  name          String   // Problem name
-  url           String   // Problem URL
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
-  assignment    Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  
+  id           String   @id @default(uuid())
+  assignmentId String
+  name         String // Problem name
+  url          String // Problem URL
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
   @@index([assignmentId])
 }
 
 model Rank {
-  id                String   @id @default(uuid())
-  assignmentId      String
-  rank              Int
-  name              String   // User name
-  solvedCount       Int
-  totalTimeMinutes  Int
+  id               String   @id @default(uuid())
+  assignmentId     String
+  rank             Int
+  name             String // User name
+  solvedCount      Int
+  totalTimeMinutes Int
   // Problem results stored as JSON array matching the structure from standings
   // Each element: { solved: boolean, first?: boolean, attempted?: boolean, attempts: number, time: string | null }
-  problems          Json     // Array of ProblemResult objects
+  problems         Json // Array of ProblemResult objects
   // Standings metadata
-  standingsTitle    String?  // Title from standings page
-  standingsUrl      String?  // URL of the standings
-  problemNames      String[] // Array of problem names in order
-  updatedAt         DateTime @updatedAt
-  createdAt         DateTime @default(now())
-  
-  assignment        Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  
+  standingsTitle   String? // Title from standings page
+  standingsUrl     String? // URL of the standings
+  problemNames     String[] // Array of problem names in order
+  updatedAt        DateTime @updatedAt
+  createdAt        DateTime @default(now())
+
+  assignment     Assignment      @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  problemResults ProblemResult[]
+
+  @@unique([assignmentId, name]) // One rank entry per user per assignment
   @@index([assignmentId])
   @@index([rank])
   @@index([name])
-  @@unique([assignmentId, name]) // One rank entry per user per assignment
+}
+
+model ProblemResult {
+  id           String    @id @default(uuid())
+  name         String // User name
+  assignmentId String
+  problemName  String // Problem name
+  isUpsolve    Boolean   @default(false) // Whether this is from an upsolve assignment
+  attempts     Int       @default(0) // Number of attempts before solving
+  solvedTime   Int? // Minutes into the competition when the problem was solved (null if not solved)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  rank       Rank?      @relation(fields: [rankId], references: [id])
+  rankId     String?
+
+  @@unique([name, assignmentId, problemName]) // One result per user per problem per assignment
+  @@index([name])
+  @@index([assignmentId])
+  @@index([problemName])
+  @@index([isUpsolve])
 }

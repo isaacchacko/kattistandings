@@ -471,11 +471,104 @@ export async function fetchAndSaveStandings(assignmentUrl: string): Promise<void
         },
       })
     );
-    await Promise.all(upsertPromises);
+    const upsertedRanks = await Promise.all(upsertPromises);
     // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/kattis-fetcher.ts:380',message:'After upsert ranks',data:{upsertedCount:standings.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'L'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/kattis-fetcher.ts:380',message:'After upsert ranks',data:{upsertedCount:upsertedRanks.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'L'})}).catch(()=>{});
     // #endregion
-    console.log(`[Kattis Fetcher] Upserted ${standings.length} rank entries`);
+    console.log(`[Kattis Fetcher] Upserted ${upsertedRanks.length} rank entries`);
+    
+    // Create a map of user name to rank ID for quick lookup
+    const rankIdMap = new Map<string, string>();
+    upsertedRanks.forEach(rank => {
+      rankIdMap.set(rank.name, rank.id);
+    });
+    
+    // Save individual problem results to ProblemResult table
+    const isUpsolve = assignment.name.toLowerCase().includes('upsolve');
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/kattis-fetcher.ts:487',message:'Determining isUpsolve flag',data:{assignmentName:assignment.name,assignmentNameLower:assignment.name.toLowerCase(),isUpsolve},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+    const problemResultPromises: Promise<any>[] = [];
+    
+    standings.forEach(entry => {
+      const rankId = rankIdMap.get(entry.name);
+      if (!rankId) {
+        console.warn(`[Kattis Fetcher] No rank ID found for user "${entry.name}"`);
+        return;
+      }
+      
+      entry.problems.forEach((problem, index) => {
+        const problemName = problemNames[index];
+        if (problemName && problem.solved) {
+          // Parse time string (format: "MM:SS" or "H:MM:SS")
+          // Convert to minutes into the competition (integer)
+          let solvedTime: number | null = null;
+          if (problem.time) {
+            try {
+              const timeParts = problem.time.split(':').map(Number);
+              let totalMinutes = 0;
+              if (timeParts.length === 2) {
+                // MM:SS format - convert to minutes (round to nearest integer)
+                totalMinutes = Math.round(timeParts[0] + timeParts[1] / 60);
+              } else if (timeParts.length === 3) {
+                // H:MM:SS format - convert to minutes (round to nearest integer)
+                totalMinutes = Math.round(timeParts[0] * 60 + timeParts[1] + timeParts[2] / 60);
+              }
+              solvedTime = totalMinutes > 0 ? totalMinutes : null;
+            } catch (e) {
+              // If parsing fails, leave as null
+              console.warn(`[Kattis Fetcher] Failed to parse time "${problem.time}" for problem "${problemName}":`, e);
+            }
+          }
+          
+          // #region agent log
+          fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/kattis-fetcher.ts:521',message:'Creating ProblemResult record',data:{userName:entry.name,assignmentName:assignment.name,problemName,isUpsolve,hasSolvedTime:solvedTime!==null,attempts:problem.attempts},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1'})}).catch(()=>{});
+          // #endregion
+          problemResultPromises.push(
+            prisma.problemResult.upsert({
+              where: {
+                name_assignmentId_problemName: {
+                  name: entry.name,
+                  assignmentId: assignment.id,
+                  problemName: problemName,
+                },
+              },
+              update: {
+                isUpsolve,
+                attempts: problem.attempts,
+                solvedTime,
+                rankId,
+              },
+              create: {
+                name: entry.name,
+                assignmentId: assignment.id,
+                problemName: problemName,
+                isUpsolve,
+                attempts: problem.attempts,
+                solvedTime,
+                rankId,
+              },
+            })
+          );
+        }
+      });
+    });
+    
+    // Delete all problem results for users in this assignment before recreating them
+    // This ensures consistency and handles cases where solutions were invalidated
+    await prisma.problemResult.deleteMany({
+      where: {
+        assignmentId: assignment.id,
+        name: {
+          in: standings.map(s => s.name),
+        },
+      },
+    });
+    
+    if (problemResultPromises.length > 0) {
+      await Promise.all(problemResultPromises);
+      console.log(`[Kattis Fetcher] Upserted ${problemResultPromises.length} problem result entries`);
+    }
   } catch (upsertError) {
     // #region agent log
     fetch('http://127.0.0.1:7245/ingest/6009d8cc-1a1c-4e6b-a6b9-d1cb003052c3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/kattis-fetcher.ts:383',message:'Error in upsert ranks',data:{error:upsertError instanceof Error?upsertError.message:String(upsertError),stack:upsertError instanceof Error?upsertError.stack:undefined,standingsCount:standings.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'L'})}).catch(()=>{});
