@@ -25,10 +25,25 @@ export default function RankPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [expandedUpsolves, setExpandedUpsolves] = useState<string | null>(null);
+  const [linkedinUrls, setLinkedinUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchRankings();
+    fetchLinkedInUrls();
   }, []);
+
+  const fetchLinkedInUrls = async () => {
+    try {
+      const response = await fetch('/linkedin_urls.json');
+      if (response.ok) {
+        const data = await response.json();
+        setLinkedinUrls(data);
+      }
+    } catch (err) {
+      // Silently fail - LinkedIn URLs are optional
+      console.warn('Failed to load LinkedIn URLs:', err);
+    }
+  };
 
   const fetchRankings = async () => {
     try {
@@ -139,7 +154,26 @@ export default function RankPage() {
                         {user.rank}
                       </td>
                       <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm font-medium text-black dark:text-zinc-50">
-                        {user.name}
+                        {linkedinUrls[user.name] && linkedinUrls[user.name].trim() ? (
+                          <a
+                            href={linkedinUrls[user.name]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                          >
+                            <svg
+                              className="w-4 h-4 text-blue-600 dark:text-blue-400"
+                              fill="currentColor"
+                              viewBox="0 0 24 24"
+                              aria-hidden="true"
+                            >
+                              <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                            </svg>
+                            <span>{user.name}</span>
+                          </a>
+                        ) : (
+                          <span>{user.name}</span>
+                        )}
                       </td>
                       <td className="border-r border-zinc-200 dark:border-zinc-700 px-4 py-3 text-sm text-right font-semibold text-black dark:text-zinc-50">
                         {user.totalScore.toFixed(1)}
